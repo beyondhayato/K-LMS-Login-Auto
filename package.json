@@ -1,0 +1,21 @@
+{
+  "name": "klms-puppeteer",
+  "version": "0.1.0",
+  "description": "K-LMS token refresher MVP with Puppeteer",
+  "main": "index.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node index.js",
+    "token": "node token.js",
+    "cron": "node cron-scheduler.js",
+    "test-cron": "node test-cron.js"
+  },
+  "dependencies": {
+    "@google/generative-ai": "^0.24.1",
+    "dotenv": "^16.4.5",
+    "googleapis": "^164.0.0",
+    "node-cron": "^4.2.1",
+    "node-fetch": "^3.3.2",
+    "puppeteer": "^23.7.2"
+  }
+}

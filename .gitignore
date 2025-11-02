@@ -1,0 +1,10 @@
+# セキュリティに関わるもの（絶対にアップ禁止）
+.env
+token.json
+oauth-credentials.json
+credentials.json
+
+# OSやIDEのゴミファイル
+node_modules/
+.DS_Store
+.vscode/

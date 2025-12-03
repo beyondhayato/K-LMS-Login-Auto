@@ -8,10 +8,22 @@ import (
 	"os"
 
 	"gopkg.in/gomail.v2"
+	
+	"klms-go/internal/storage"
+)
+
+const (
+	MaxLinePerDay  = 10
+	MaxGmailPerDay = 50
 )
 
 // SendLINE はテキストメッセージをLINEに送ります
 func SendLINE(message string) error {
+	usage := storage.LoadUsage()
+	if usage.LineCount >= MaxLinePerDay {
+		return fmt.Errorf("本日のLINE送信上限(%d回)に達したためスキップします", MaxLinePerDay)
+	}
+
 	token := os.Getenv("LINE_TOKEN")
 	userID := os.Getenv("LINE_USER_ID")
 
@@ -19,14 +31,10 @@ func SendLINE(message string) error {
 		return fmt.Errorf("LINE設定が足りません")
 	}
 
-	// LINE Messaging API の形式
 	payload := map[string]interface{}{
 		"to": userID,
 		"messages": []map[string]string{
-			{
-				"type": "text",
-				"text": message,
-			},
+			{"type": "text", "text": message},
 		},
 	}
 
@@ -45,13 +53,15 @@ func SendLINE(message string) error {
 	if resp.StatusCode != 200 {
 		return fmt.Errorf("LINE送信失敗: %s", resp.Status)
 	}
+
+	storage.IncrementLine()
 	return nil
 }
 
-// SendGmail は画像を添付してGmailを送ります
-func SendGmail(subject string, body string, imagePath string) error {
-	smtpUser := os.Getenv("SMTP_USER") // あなたのGmailアドレス
-	smtpPass := os.Getenv("SMTP_PASS") // Gmailアプリパスワード
+// SendGmail は画像と.icsファイルを添付してGmailを送ります
+func SendGmail(subject string, body string, attachments []string) error {
+	smtpUser := os.Getenv("SMTP_USER")
+	smtpPass := os.Getenv("SMTP_PASS")
 
 	if smtpUser == "" || smtpPass == "" {
 		return fmt.Errorf("Gmail設定が足りません")
@@ -59,16 +69,17 @@ func SendGmail(subject string, body string, imagePath string) error {
 
 	m := gomail.NewMessage()
 	m.SetHeader("From", smtpUser)
-	m.SetHeader("To", smtpUser) // 自分宛てに送る
+	m.SetHeader("To", smtpUser)
 	m.SetHeader("Subject", subject)
 	m.SetBody("text/plain", body)
 
-	// 画像があれば添付する
-	if imagePath != "" {
-		m.Attach(imagePath)
+	// リストにあるファイルを全て添付
+	for _, filePath := range attachments {
+		if filePath != "" {
+			m.Attach(filePath)
+		}
 	}
 
-	// Gmailのサーバー設定
 	d := gomail.NewDialer("smtp.gmail.com", 587, smtpUser, smtpPass)
 
 	if err := d.DialAndSend(m); err != nil {

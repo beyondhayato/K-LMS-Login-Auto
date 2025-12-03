@@ -8,6 +8,7 @@ require (
 	github.com/google/generative-ai-go v0.20.1
 	github.com/playwright-community/playwright-go v0.5200.1
 	google.golang.org/api v0.256.0
+	gopkg.in/gomail.v2 v2.0.0-20160411212932-81ebce5c23df
 )
 
 require (
@@ -45,7 +46,6 @@ require (
 	google.golang.org/grpc v1.76.0 // indirect
 	google.golang.org/protobuf v1.36.10 // indirect
 	gopkg.in/alexcesaro/quotedprintable.v3 v3.0.0-20150716171945-2caba252f4dc // indirect
-	gopkg.in/gomail.v2 v2.0.0-20160411212932-81ebce5c23df // indirect
 )
 
 // ...

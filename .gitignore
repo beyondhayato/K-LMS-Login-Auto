@@ -1,14 +1,15 @@
 # --- 機密情報（絶対公開NG） ---
 .env
 state.json
-oauth-credentials.json
-token.json
 
 # --- 実行時に生成されるファイル（不要） ---
-klms_after_login.png
+screenshot.png
 last-run.txt
 run-log.txt
 daily-gemini-count.json
+schedule.ics
+data/
+logs/
 
 # --- ビルド成果物（exeなどはGithubに上げない） ---
 *.exe

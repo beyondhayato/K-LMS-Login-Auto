@@ -7,100 +7,138 @@ import (
 	"io/ioutil"
 	"log"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/google/generative-ai-go/genai"
 	"google.golang.org/api/option"
 )
 
-// 1日の制限回数設定
+// 設定ファイル
 const (
-	DailyLimitFile = "daily-gemini-count.json"
+	DailyLimitFile = "data/daily-gemini-count.json"
+	CourseListFile = "data/courses.json" // ★追加: 科目リストのパス
 	MaxGeminiPerDay = 50
 )
 
-// 日次カウントデータの構造
 type DailyData struct {
 	Date  string `json:"date"`
 	Count int    `json:"count"`
 }
 
-// ExtractAssignmentInfo は画像をGeminiに投げて文字起こしします
-func ExtractAssignmentInfo(imagePath string) (string, error) {
-	// 1. まず1日の制限チェック
+type Assignment struct {
+	Course   string `json:"course"`
+	Title    string `json:"title"`
+	Deadline string `json:"deadline"`
+}
+
+func ExtractAssignmentInfo(imagePath string) (string, []Assignment, error) {
 	if !canRunGeminiToday() {
-		log.Println("🚫 今日のGemini実行上限（50回）に達したため、OCRをスキップします")
-		return "実行制限到達のためOCRスキップ", nil
+		return "実行制限到達のためOCRスキップ", nil, nil
 	}
 
 	ctx := context.Background()
 	apiKey := os.Getenv("GEMINI_API_KEY")
 	if apiKey == "" {
-		return "", fmt.Errorf("GEMINI_API_KEYが設定されていません")
+		return "", nil, fmt.Errorf("GEMINI_API_KEYが設定されていません")
 	}
 
-	// 2. Geminiクライアント作成
 	client, err := genai.NewClient(ctx, option.WithAPIKey(apiKey))
 	if err != nil {
-		return "", fmt.Errorf("Geminiクライアント作成エラー: %v", err)
+		return "", nil, fmt.Errorf("Geminiクライアント作成エラー: %v", err)
 	}
 	defer client.Close()
 
-	// 3. 画像読み込み
 	imgData, err := ioutil.ReadFile(imagePath)
 	if err != nil {
-		return "", fmt.Errorf("画像読み込みエラー: %v", err)
+		return "", nil, fmt.Errorf("画像読み込みエラー: %v", err)
 	}
 
-	// 4. モデル設定 (Node.js版と同じモデル名)
-	model := client.GenerativeModel("gemini-2.5-flash") // 
+	// ★追加: 科目リストを読み込む
+	courseListJSON := "[]"
+	if data, err := ioutil.ReadFile(CourseListFile); err == nil {
+		courseListJSON = string(data)
+	}
 
-	// 5. プロンプト作成
-	prompt := genai.Text(`
-この画像は慶應義塾大学のK-LMS（Canvas）ダッシュボードのスクリーンショットです。
+	model := client.GenerativeModel("gemini-2.5-flash")
 
-以下の情報を抽出してください：
-1. 授業名
-2. 課題タイトル
-3. 提出期限（日付・時間）
+	// ★修正: プロンプトに科目リスト(Known Courses)を含める
+	currentYear := time.Now().Year()
+	prompt := genai.Text(fmt.Sprintf(`
+この画像はK-LMSのダッシュボードです。
+以下の「登録済み科目リスト」を参照し、検出された授業名がリスト内のものと一致、あるいは類似している場合は、**必ずリスト内の正式名称（教員名含む）**に修正して出力してください。
 
-複数課題がある場合はすべて出力してください。
-情報が見つからない場合は「なし」と記載してください。
+【登録済み科目リスト】
+%s
 
-出力形式（厳守）：
-【授業名】
-【課題】
-【期限】
+抽出ルール:
+1. course: 授業名。可能な限り上記のリストにある名称を使用すること。リストにない場合は画像内の表記に従うが、教員名がわかる場合は "授業名 (教員名)" の形式にすること。
+2. title: 課題名
+3. deadline: 期限 (現在は%d年です。"YYYY-MM-DD HH:mm" 形式に変換すること)
 
-余計な説明文は書かず、上記フォーマットのみ出力してください。
-`)
+出力は**JSON配列形式のみ**で行ってください。
 
-	// 6. 送信 (画像 + テキスト)
+出力例:
+[
+  {"course": "造形・デザイン論 (荒木 文果)", "title": "小テスト (7)", "deadline": "2025-12-07 23:59"},
+  {"course": "統計学基礎 (藪 友良)", "title": "課題1", "deadline": "2026-01-13 23:59"}
+]
+`, courseListJSON, currentYear))
+
 	resp, err := model.GenerateContent(ctx, prompt, genai.ImageData("png", imgData))
 	if err != nil {
-		return "", fmt.Errorf("Gemini生成エラー: %v", err)
+		return "", nil, fmt.Errorf("Gemini生成エラー: %v", err)
 	}
 
-	// 7. 結果取得
 	if len(resp.Candidates) == 0 || len(resp.Candidates[0].Content.Parts) == 0 {
-		return "読み取り結果なし", nil
+		return "読み取り結果なし", nil, nil
 	}
 
-	// テキスト部分を取り出す
-	var resultText string
+	var rawJSON string
 	for _, part := range resp.Candidates[0].Content.Parts {
 		if txt, ok := part.(genai.Text); ok {
-			resultText += string(txt)
+			rawJSON += string(txt)
 		}
 	}
 
-	// 8. 成功したのでカウントアップ
+	rawJSON = strings.TrimSpace(rawJSON)
+	rawJSON = strings.TrimPrefix(rawJSON, "```json")
+	rawJSON = strings.TrimPrefix(rawJSON, "```")
+	rawJSON = strings.TrimSuffix(rawJSON, "```")
+
 	incrementGeminiCount()
+
+	var assignments []Assignment
+	if err := json.Unmarshal([]byte(rawJSON), &assignments); err != nil {
+		log.Printf("JSONパース失敗: %v \n生データ: %s", err, rawJSON)
+		return rawJSON, nil, nil
+	}
+
+	var notifyText string
+	if len(assignments) == 0 {
+		notifyText = "課題は見つかりませんでした"
+	} else {
+		for _, a := range assignments {
+			dateStr := formatDeadline(a.Deadline)
+			// 通知フォーマット
+			notifyText += fmt.Sprintf("【コース詳細】%s\n【課題】%s\n【期限】%s\n---\n", a.Course, a.Title, dateStr)
+		}
+	}
 	
-	return resultText, nil
+	return notifyText, assignments, nil
 }
 
-// === 以下、回数制限管理ロジック ===
+func formatDeadline(isoDate string) string {
+	t, err := time.Parse("2006-01-02 15:04", isoDate)
+	if err != nil {
+		return isoDate
+	}
+	now := time.Now()
+	if t.Year() == now.Year() {
+		return t.Format("1月2日 15:04")
+	}
+	return t.Format("2006年1月2日 15:04")
+}
 
 func loadDailyCount() DailyData {
 	data := DailyData{Date: time.Now().Format("2006-01-02"), Count: 0}
@@ -113,6 +151,7 @@ func loadDailyCount() DailyData {
 
 func saveDailyCount(data DailyData) {
 	file, _ := json.MarshalIndent(data, "", "  ")
+	os.MkdirAll("data", 0755)
 	ioutil.WriteFile(DailyLimitFile, file, 0644)
 }
 
@@ -120,7 +159,6 @@ func canRunGeminiToday() bool {
 	data := loadDailyCount()
 	today := time.Now().Format("2006-01-02")
 
-	// 日付が変わっていたらリセット
 	if data.Date != today {
 		saveDailyCount(DailyData{Date: today, Count: 0})
 		return true

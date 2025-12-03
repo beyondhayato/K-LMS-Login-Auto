@@ -10,6 +10,16 @@ Go言語 × Playwright × Gemini × LINE/Gmail 慶應義塾大学の K-LMS（Can
 
 W通知: LINEで「速報」を、Gmailで「詳細（スクショ付き）」を受け取れます。
 
+📅 課題を Googleカレンダーに自動取り込み
+
+K-LMS 上の「課題の締切情報」をもとに、プログラム実行時に `schedule.ics` というカレンダーファイルを自動生成します。
+
+- 課題のタイトル・締切日時などを内部で JSON 形式にまとめ、それを元に iCalendar 形式 (`.ics`) のファイルを生成
+- 生成された `schedule.ics` は Gmail 通知メールに添付されます
+- スマホでメールを開き、`schedule.ics` をダウンロードして開くと、そのまま Googleカレンダーに予定として追加できます
+
+※ `schedule.ics` は毎回プログラムから自動生成されるファイルであり、リポジトリには含めていません（`.gitignore` 対象）。
+
 📦 配布内容
 フォルダ内には以下のファイルのみが含まれています。
 
@@ -50,59 +60,6 @@ Googleアカウント管理 → セキュリティ → 2段階認証をオン
 
 適当な名前（K-LMSなど）をつけて作成 → 生成された16桁を使用
 
-🍎 Macでのセットアップ手順
-1. 準備
-ターミナルを開き、解凍したフォルダへ移動します。 （cd と入力した後に、フォルダをターミナルにドラッグ＆ドロップしてEnter）
-
-2. 権限の付与（必須）
-Macのセキュリティにより、最初は実行できません。以下のコマンドを実行してください。
-
-Bash
-
-chmod +x K-LMS-Mac
-3. 初回起動と許可
-Finderで K-LMS-Mac を 右クリック（Control+クリック） して「開く」を選択します。
-
-「開発元が未確認ですが開きますか？」と出たら 「開く」 を押します。
-
-初回のみ、ブラウザのダウンロード等が自動で行われます。
-
-ターミナルが閉じて、LINE/Gmailに通知が来れば成功です！
-
-4. 自動実行の設定 (launchd)
-1分おきに自動で動かす設定です。
-
-以下の内容で ~/Library/LaunchAgents/com.klms.autocheck.plist というファイルを作成します。 ※ Path/To/... の部分は、実際のフォルダの場所（絶対パス）に書き換えてください。
-
-XML
-
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>Label</key>
-    <string>com.klms.autocheck</string>
-    <key>ProgramArguments</key>
-    <array>
-        <string>/Users/あなたのユーザー名/Desktop/K-LMS-Distribution/K-LMS-Mac</string>
-    </array>
-    <key>StartInterval</key>
-    <integer>60</integer>
-    <key>WorkingDirectory</key>
-    <string>/Users/あなたのユーザー名/Desktop/K-LMS-Distribution</string>
-    
-    <key>StandardOutPath</key>
-    <string>/tmp/klms.log</string>
-    <key>StandardErrorPath</key>
-    <string>/tmp/klms_err.log</string>
-</dict>
-</plist>
-設定を反映して開始します。
-
-Bash
-
-launchctl load ~/Library/LaunchAgents/com.klms.autocheck.plist
-launchctl start com.klms.autocheck
 🪟 Windowsでのセットアップ手順
 .env を設定します。
 
@@ -122,3 +79,5 @@ K-LMS.exe をダブルクリックして動作確認します（初回は数秒�
 .envの管理: パスワードが含まれるため、このファイルは絶対に他人に渡さないでください。
 
 API制限: Gemini APIなどの無料枠を超えないよう、内部で回数制限がかかっています。
+
+責任者：慶應義塾大学商学部2年 宮久保隼(haya.miy02@keio.jp)

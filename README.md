@@ -1,7 +1,7 @@
 🚀 K-LMS Auto Checker (Standalone)
 Go言語 × Playwright × Gemini × LINE/Gmail 慶應義塾大学の K-LMS（Canvas）をバックグラウンドで高速監視し、課題が追加された瞬間に LINEとメールで通知 する自動化ツールです。
 
-> **Note**: Gemini APIのrate limit制限（2024年12月7日頃の変更: 1日20回）を考慮した実装となっています。
+> **Note**: Gemini APIのrate limit制限（2025年12月7日頃の変更: 1日20回）を考慮した実装となっています。
 
 ✨ 特徴
 完全自立型: GAS（Google Apps Script）や中間サーバーは不要。PC単体で完結します。

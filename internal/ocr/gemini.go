@@ -2,6 +2,8 @@ package ocr
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io/ioutil"
@@ -14,28 +16,125 @@ import (
 	"google.golang.org/api/option"
 )
 
-// 設定ファイル
+// 設定ファイルパス
 const (
-	DailyLimitFile = "data/daily-gemini-count.json"
-	CourseListFile = "data/courses.json" // ★追加: 科目リストのパス
-	MaxGeminiPerDay = 50
+	DailyLimitFile    = "data/daily-gemini-count.json" // Gemini APIの1日あたりの使用回数を記録
+	CourseListFile    = "data/courses.json"            // 登録済み科目リストのパス
+	OcrCacheFile      = "data/ocr-cache.json"          // 画像ハッシュとOCR結果のキャッシュ
+	MaxGeminiPerDay   = 20                              // Gemini APIの1日あたりの使用制限（環境変数MAX_GEMINI_PER_DAYで上書き可能）
 )
 
+// DailyData は1日あたりのGemini API使用回数を記録します
 type DailyData struct {
-	Date  string `json:"date"`
-	Count int    `json:"count"`
+	Date  string `json:"date"`  // 日付（YYYY-MM-DD形式）
+	Count int    `json:"count"` // 使用回数
 }
 
+// Assignment は課題情報を保持します
 type Assignment struct {
-	Course   string `json:"course"`
-	Title    string `json:"title"`
-	Deadline string `json:"deadline"`
+	Course   string `json:"course"`   // 授業名（教員名含む）
+	Title    string `json:"title"`    // 課題名
+	Deadline string `json:"deadline"` // 期限（YYYY-MM-DD HH:mm形式）
+}
+
+// OCRキャッシュ用の構造体
+type OcrCacheEntry struct {
+	ImageHash   string       `json:"image_hash"`
+	OcrText     string       `json:"ocr_text"`
+	Assignments []Assignment `json:"assignments"`
+	Timestamp   string       `json:"timestamp"`
+}
+
+type OcrCache struct {
+	Entries []OcrCacheEntry `json:"entries"`
+}
+
+// 画像のハッシュを計算
+func calculateImageHash(imagePath string) (string, error) {
+	imgData, err := ioutil.ReadFile(imagePath)
+	if err != nil {
+		return "", err
+	}
+	hash := sha256.Sum256(imgData)
+	return hex.EncodeToString(hash[:]), nil
+}
+
+// OCRキャッシュを読み込む
+func loadOcrCache() *OcrCache {
+	cache := &OcrCache{Entries: []OcrCacheEntry{}}
+	if data, err := ioutil.ReadFile(OcrCacheFile); err == nil {
+		json.Unmarshal(data, cache)
+	}
+	return cache
+}
+
+// OCRキャッシュを保存
+func saveOcrCache(cache *OcrCache) {
+	data, _ := json.MarshalIndent(cache, "", "  ")
+	os.MkdirAll("data", 0755)
+	ioutil.WriteFile(OcrCacheFile, data, 0644)
+}
+
+// キャッシュからOCR結果を取得
+func getCachedOcrResult(imageHash string) (string, []Assignment, bool) {
+	cache := loadOcrCache()
+	for _, entry := range cache.Entries {
+		if entry.ImageHash == imageHash {
+			log.Printf("💾 キャッシュからOCR結果を取得しました（API使用回数節約）")
+			return entry.OcrText, entry.Assignments, true
+		}
+	}
+	return "", nil, false
+}
+
+// OCR結果をキャッシュに保存
+func saveOcrResult(imageHash string, ocrText string, assignments []Assignment) {
+	cache := loadOcrCache()
+	
+	// 既存のエントリを削除（同じハッシュがある場合）
+	newEntries := []OcrCacheEntry{}
+	for _, entry := range cache.Entries {
+		if entry.ImageHash != imageHash {
+			newEntries = append(newEntries, entry)
+		}
+	}
+	
+	// 新しいエントリを追加
+	newEntries = append(newEntries, OcrCacheEntry{
+		ImageHash:   imageHash,
+		OcrText:     ocrText,
+		Assignments: assignments,
+		Timestamp:   time.Now().Format("2006-01-02 15:04:05"),
+	})
+	
+	// キャッシュサイズを制限（最新50件まで保持）
+	if len(newEntries) > 50 {
+		newEntries = newEntries[len(newEntries)-50:]
+	}
+	
+	cache.Entries = newEntries
+	saveOcrCache(cache)
 }
 
 func ExtractAssignmentInfo(imagePath string) (string, []Assignment, error) {
+	// 画像ハッシュを計算
+	imageHash, err := calculateImageHash(imagePath)
+	if err != nil {
+		return "", nil, fmt.Errorf("画像ハッシュ計算エラー: %v", err)
+	}
+	
+	// キャッシュをチェック
+	if ocrText, assignments, found := getCachedOcrResult(imageHash); found {
+		return ocrText, assignments, nil
+	}
+	
+	// キャッシュにない場合、Gemini APIを使用
 	if !canRunGeminiToday() {
+		log.Printf("⚠️ Gemini APIの1日あたりの使用制限（%d回）に達しました。OCRをスキップします。", MaxGeminiPerDay)
 		return "実行制限到達のためOCRスキップ", nil, nil
 	}
+	
+	log.Printf("🔍 新しい画像を検出しました。Gemini APIでOCRを実行します...")
 
 	ctx := context.Background()
 	apiKey := os.Getenv("GEMINI_API_KEY")
@@ -107,6 +206,7 @@ func ExtractAssignmentInfo(imagePath string) (string, []Assignment, error) {
 	rawJSON = strings.TrimSuffix(rawJSON, "```")
 
 	incrementGeminiCount()
+	log.Printf("✅ Gemini APIでOCR完了")
 
 	var assignments []Assignment
 	if err := json.Unmarshal([]byte(rawJSON), &assignments); err != nil {
@@ -124,6 +224,9 @@ func ExtractAssignmentInfo(imagePath string) (string, []Assignment, error) {
 			notifyText += fmt.Sprintf("【コース詳細】%s\n【課題】%s\n【期限】%s\n---\n", a.Course, a.Title, dateStr)
 		}
 	}
+	
+	// OCR結果をキャッシュに保存
+	saveOcrResult(imageHash, notifyText, assignments)
 	
 	return notifyText, assignments, nil
 }
@@ -161,8 +264,11 @@ func canRunGeminiToday() bool {
 
 	if data.Date != today {
 		saveDailyCount(DailyData{Date: today, Count: 0})
+		log.Printf("📊 Gemini API使用回数: 0/%d (本日リセット)", MaxGeminiPerDay)
 		return true
 	}
+	remaining := MaxGeminiPerDay - data.Count
+	log.Printf("📊 Gemini API使用回数: %d/%d (残り: %d回)", data.Count, MaxGeminiPerDay, remaining)
 	return data.Count < MaxGeminiPerDay
 }
 

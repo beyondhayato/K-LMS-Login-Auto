@@ -7,6 +7,7 @@ import (
 	"io/ioutil"
 	"log"
 	"os"
+	"time"
 
 	"github.com/playwright-community/playwright-go"
 )
@@ -18,13 +19,52 @@ const (
 	ScreenshotFile = "data/screenshot.png"
 )
 
+// 設定定数
+const (
+	MaxRetries           = 3              // 最大リトライ回数
+	RetryDelay           = 5 * time.Second // リトライ間隔
+	DefaultTimeout       = 120000          // デフォルトタイムアウト（120秒）
+	NetworkIdleTimeout   = 30000           // ネットワークアイドル待機タイムアウト（30秒）
+)
+
 type CheckResult struct {
 	Hash           string
 	ScreenshotPath string
 	HasDiff        bool
 }
 
+// CheckKLMSTask はK-LMSをチェックします（リトライ機能付き）
 func CheckKLMSTask(oldHash string) (*CheckResult, error) {
+	var lastErr error
+	
+	// リトライループ
+	for attempt := 1; attempt <= MaxRetries; attempt++ {
+		if attempt > 1 {
+			log.Printf("🔄 リトライ %d/%d 回目（%v 待機後）", attempt, MaxRetries, RetryDelay)
+			time.Sleep(RetryDelay)
+		}
+		
+		result, err := checkKLMSTaskOnce(oldHash, attempt)
+		if err == nil {
+			return result, nil
+		}
+		
+		lastErr = err
+		log.Printf("⚠️ 試行 %d/%d 失敗: %v", attempt, MaxRetries, err)
+		
+		// 最後の試行でない場合は続行
+		if attempt < MaxRetries {
+			continue
+		}
+	}
+	
+	// すべてのリトライが失敗した場合でも、可能な限り処理を続行
+	log.Printf("❌ すべてのリトライが失敗しました。最後のエラー: %v", lastErr)
+	return nil, fmt.Errorf("最大リトライ回数（%d回）に達しました: %v", MaxRetries, lastErr)
+}
+
+// checkKLMSTaskOnce は1回のチェックを実行します
+func checkKLMSTaskOnce(oldHash string, attempt int) (*CheckResult, error) {
 	// フォルダが存在しないとエラーになる可能性があるので、念のため作成しておく
 	_ = os.MkdirAll("data", 0755)
 	_ = os.MkdirAll("logs", 0755)
@@ -61,6 +101,7 @@ func CheckKLMSTask(oldHash string) (*CheckResult, error) {
 	log.Println("🌐 アクセス中: https://lms.keio.jp")
 	if _, err := page.Goto("https://lms.keio.jp", playwright.PageGotoOptions{
 		WaitUntil: playwright.WaitUntilStateDomcontentloaded,
+		Timeout:   playwright.Float(60000), // 60秒タイムアウト
 	}); err != nil {
 		return nil, fmt.Errorf("ページ遷移エラー: %v", err)
 	}
@@ -71,40 +112,98 @@ func CheckKLMSTask(oldHash string) (*CheckResult, error) {
 		log.Println("🔗 keio.jpリンクをクリック")
 		keioLink.Click(playwright.ElementHandleClickOptions{Force: playwright.Bool(true)})
 
-		page.WaitForSelector("input[type=\"text\"]")
+		// タイムアウトを設定して待機
+		if _, err := page.WaitForSelector("input[type=\"text\"]", playwright.PageWaitForSelectorOptions{
+			Timeout: playwright.Float(30000), // 30秒
+		}); err != nil {
+			return nil, fmt.Errorf("ログインフォーム待機タイムアウト: %v", err)
+		}
+		
 		page.Fill("input[type=\"text\"]", os.Getenv("KEIO_USER"))
 		// 【最強のEnter連打】ここは絶対に変えません
 		page.Press("input[type=\"text\"]", "Enter")
 
-		page.WaitForSelector("input[type=\"password\"]")
+		if _, err := page.WaitForSelector("input[type=\"password\"]", playwright.PageWaitForSelectorOptions{
+			Timeout: playwright.Float(30000), // 30秒
+		}); err != nil {
+			return nil, fmt.Errorf("パスワード入力欄待機タイムアウト: %v", err)
+		}
+		
 		page.Fill("input[type=\"password\"]", os.Getenv("KEIO_PASS"))
 		// 【最強のEnter連打】ここも絶対に変えません
 		page.Press("input[type=\"password\"]", "Enter")
 		
 		// ログイン後の待機
-		page.WaitForLoadState(playwright.PageWaitForLoadStateOptions{
-			State: playwright.LoadStateDomcontentloaded,
-		})
+		if err := page.WaitForLoadState(playwright.PageWaitForLoadStateOptions{
+			State:   playwright.LoadStateDomcontentloaded,
+			Timeout: playwright.Float(60000), // 60秒
+		}); err != nil {
+			return nil, fmt.Errorf("ログイン後のページ読み込みタイムアウト: %v", err)
+		}
 		context.StorageState(CookieFile) // 保存
 	}
 
-	// === ダッシュボード待機（ここを修正） ===
-	// 以前: #dashboard を待っていた
-	// 修正: #planner-today-btn (本日ボタン) を待つことで「中身」の読み込み完了を保証
-	log.Println("⏳ ダッシュボード(本日ボタン)待機中...")
+	// === ダッシュボード待機（複数のセレクタを試す） ===
+	log.Println("⏳ ダッシュボード待機中...")
 	
-	if _, err := page.WaitForSelector("#planner-today-btn", playwright.PageWaitForSelectorOptions{
-		Timeout: playwright.Float(90000), // 90秒
-	}); err != nil {
+	// 複数のセレクタを順番に試す
+	selectors := []string{
+		"#planner-today-btn",  // 本日ボタン（最優先）
+		"#dashboard",          // ダッシュボード要素
+		"#dashboard-planner",  // プランナー表示
+		".planner-day",        // プランナー日付要素
+	}
+	
+	var dashboardFound bool
+	var lastSelectorErr error
+	
+	for _, selector := range selectors {
+		log.Printf("🔍 セレクタを試行中: %s", selector)
+		if _, err := page.WaitForSelector(selector, playwright.PageWaitForSelectorOptions{
+			Timeout: playwright.Float(DefaultTimeout), // 120秒
+		}); err == nil {
+			log.Printf("✅ セレクタが見つかりました: %s", selector)
+			dashboardFound = true
+			break
+		} else {
+			log.Printf("⚠️ セレクタが見つかりませんでした: %s (エラー: %v)", selector, err)
+			lastSelectorErr = err
+		}
+	}
+	
+	if !dashboardFound {
 		// タイムアウト時の詳細ログ
-		log.Printf("⚠️ 待機タイムアウト。現在のURL: %s", page.URL())
-		return nil, fmt.Errorf("ダッシュボード到達タイムアウト: %v", err)
+		currentURL := page.URL()
+		log.Printf("⚠️ すべてのセレクタでタイムアウト。現在のURL: %s", currentURL)
+		
+		// ページのスクリーンショットを保存（デバッグ用）
+		debugScreenshot := fmt.Sprintf("logs/timeout-debug-%d.png", time.Now().Unix())
+		if _, err := page.Screenshot(playwright.PageScreenshotOptions{
+			Path: playwright.String(debugScreenshot),
+			FullPage: playwright.Bool(true),
+		}); err == nil {
+			log.Printf("📸 デバッグ用スクリーンショットを保存: %s", debugScreenshot)
+		}
+		
+		// ページのHTMLを一部保存（デバッグ用）
+		if html, err := page.Content(); err == nil {
+			htmlDebugFile := fmt.Sprintf("logs/timeout-debug-%d.html", time.Now().Unix())
+			ioutil.WriteFile(htmlDebugFile, []byte(html), 0644)
+			log.Printf("📄 デバッグ用HTMLを保存: %s", htmlDebugFile)
+		}
+		
+		return nil, fmt.Errorf("ダッシュボード到達タイムアウト（試行 %d回目）: %v", attempt, lastSelectorErr)
 	}
 
-	// 念のためネットワークが落ち着くまで待機
-	page.WaitForLoadState(playwright.PageWaitForLoadStateOptions{
-		State: playwright.LoadStateNetworkidle,
-	})
+	// ネットワークが落ち着くまで待機（タイムアウトを設定）
+	log.Println("⏳ ネットワークアイドル待機中...")
+	if err := page.WaitForLoadState(playwright.PageWaitForLoadStateOptions{
+		State:   playwright.LoadStateNetworkidle,
+		Timeout: playwright.Float(NetworkIdleTimeout), // 30秒
+	}); err != nil {
+		log.Printf("⚠️ ネットワークアイドル待機タイムアウト（続行します）: %v", err)
+		// ネットワークアイドル待機のタイムアウトは致命的ではないので続行
+	}
 
 	// === ハッシュ化 ===
 	targetSelector := "#dashboard"
@@ -114,6 +213,22 @@ func CheckKLMSTask(oldHash string) (*CheckResult, error) {
 	}
 
 	log.Printf("🎯 監視対象: %s", targetSelector)
+	
+	// セレクタが存在するか確認
+	if _, err := page.QuerySelector(targetSelector); err != nil {
+		log.Printf("⚠️ 監視対象セレクタが見つかりません: %s", targetSelector)
+		// 代替セレクタを試す
+		if listItems, _ := page.QuerySelector(".planner-day"); listItems != nil {
+			targetSelector = "#dashboard-planner"
+			log.Printf("🔄 代替セレクタを使用: %s", targetSelector)
+		} else if dashboard, _ := page.QuerySelector("#dashboard"); dashboard != nil {
+			targetSelector = "#dashboard"
+			log.Printf("🔄 代替セレクタを使用: %s", targetSelector)
+		} else {
+			return nil, fmt.Errorf("監視対象セレクタが見つかりません: %s", targetSelector)
+		}
+	}
+	
 	bodyText, err := page.InnerText(targetSelector)
 	if err != nil {
 		return nil, fmt.Errorf("テキスト取得エラー: %v", err)

@@ -7,9 +7,13 @@ screenshot.png
 last-run.txt
 run-log.txt
 daily-gemini-count.json
+ocr-cache.json
 schedule.ics
 data/
 logs/
+timeout-debug-*.png
+timeout-debug-*.html
+last-timeout-notify.txt
 
 # --- ビルド成果物（exeなどはGithubに上げない） ---
 *.exe
